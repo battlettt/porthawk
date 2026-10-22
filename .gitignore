@@ -1,0 +1,18 @@
+# Binaries
+porthawk
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test artifacts
+*.test
+*.out
+coverage.*
+
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store

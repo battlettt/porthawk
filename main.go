@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"slices"
 	"syscall"
 	"time"
@@ -43,6 +44,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		quiet   = fs.Bool("q", false, "suppress progress and summary messages")
 		top     = fs.Int("top", 0, "scan the `N` most common ports")
 		noTLS   = fs.Bool("notls", false, "skip TLS handshakes on TLS ports (443, 993, ...)")
+		diff    = fs.String("diff", "", "compare results with a previous json scan in `file`")
 	)
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, "Usage: porthawk -t TARGETS [-p PORTS | -top N] [options]")
@@ -73,6 +75,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return usage("-timeout must be positive")
 	case !slices.Contains([]string{"table", "json", "csv", "html"}, *format):
 		return usage("-f must be table, json, csv or html")
+	case *diff != "" && *format != "json" && sameFile(*diff, *outFile):
+		return usage("-o %s would replace the -diff file with %s output; add -f json to keep it comparable", *outFile, *format)
 	}
 
 	var ports []int
@@ -87,6 +91,16 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	if err != nil {
 		return usage("%v", err)
+	}
+
+	// Read the previous scan before scanning, so a bad path fails fast and
+	// "-diff scan.json -o scan.json" compares against last run's results.
+	var previous []Result
+	if *diff != "" {
+		if previous, err = LoadScan(*diff); err != nil {
+			fmt.Fprintf(stderr, "porthawk: -diff: could not read previous scan: %v\n", err)
+			return exitError
+		}
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -112,17 +126,36 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	finished := time.Now()
 	interrupted := ctx.Err() != nil
-	slices.SortFunc(results, func(a, b Result) int {
-		if c := a.Host.Compare(b.Host); c != 0 {
-			return c
-		}
-		return a.Port - b.Port
-	})
+	slices.SortFunc(results, compareResults)
 
 	meta := ScanMeta{Targets: *targets, PortsScanned: len(ports), StartedAt: start, FinishedAt: finished}
+	if *diff != "" {
+		d := DiffScans(InScope(previous, hosts, ports), results)
+		meta.Diff = &d
+	}
 	if err := writeOutput(*outFile, stdout, results, *format, meta); err != nil {
 		fmt.Fprintf(stderr, "porthawk: writing results: %v\n", err)
 		return exitError
+	}
+	if meta.Diff != nil {
+		if interrupted {
+			logf("porthawk: scan was interrupted; ports listed as closed may not have been probed")
+		}
+		// Keep json on stdout parseable: it already carries the diff, so
+		// the summary goes to stderr there instead.
+		w := stdout
+		if *format == "json" && *outFile == "" {
+			w = io.Discard
+			if !*quiet {
+				w = stderr
+			}
+		} else if *outFile == "" {
+			fmt.Fprintln(w)
+		}
+		if err := WriteDiffSummary(w, *meta.Diff, *diff); err != nil {
+			fmt.Fprintf(stderr, "porthawk: writing diff: %v\n", err)
+			return exitError
+		}
 	}
 
 	if interrupted {
@@ -147,4 +180,17 @@ func writeOutput(path string, stdout io.Writer, results []Result, format string,
 		return err
 	}
 	return f.Close()
+}
+
+// sameFile reports whether paths a and b name the same file.
+func sameFile(a, b string) bool {
+	if a == "" || b == "" {
+		return false
+	}
+	ai, aerr := os.Stat(a)
+	bi, berr := os.Stat(b)
+	if aerr == nil && berr == nil {
+		return os.SameFile(ai, bi)
+	}
+	return filepath.Clean(a) == filepath.Clean(b)
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"net/netip"
 	"strconv"
 	"text/tabwriter"
 	"time"
@@ -16,23 +17,65 @@ type jsonResult struct {
 	Host      string   `json:"host"`
 	Port      int      `json:"port"`
 	Service   string   `json:"service"`
+	Version   string   `json:"version,omitempty"`
 	Banner    string   `json:"banner"`
 	LatencyMS float64  `json:"latency_ms"`
 	TLS       *TLSInfo `json:"tls,omitempty"`
 }
 
-// ScanMeta describes the scan that produced a set of results. Formats that
-// have nowhere to put it (table, json, csv) ignore it.
+// jsonReport is the json output when results are compared against a
+// previous scan; without a comparison the output is the bare results array.
+type jsonReport struct {
+	Results []Result    `json:"results"`
+	Diff    *DiffReport `json:"diff"`
+}
+
+// ScanMeta describes the scan that produced a set of results. The html
+// report shows the scan details in its header and json output includes
+// Diff; other formats ignore it.
 type ScanMeta struct {
 	Targets      string // target spec as given on the command line
 	PortsScanned int    // number of ports probed on each host
 	StartedAt    time.Time
 	FinishedAt   time.Time
+	Diff         *DiffReport // comparison with a previous scan, if any
 }
 
 // latencyMS returns the result's latency in milliseconds, rounded to 0.01.
 func (r Result) latencyMS() float64 {
 	return math.Round(float64(r.Latency.Microseconds())/10) / 100
+}
+
+// MarshalJSON encodes r in porthawk's json output format.
+func (r Result) MarshalJSON() ([]byte, error) {
+	return json.Marshal(jsonResult{r.Host.String(), r.Port, r.Service, r.Version, r.Banner, r.latencyMS(), r.TLS})
+}
+
+// UnmarshalJSON decodes a result written by MarshalJSON. Unknown fields are
+// ignored and missing ones left empty, except host and port, which are
+// required.
+func (r *Result) UnmarshalJSON(data []byte) error {
+	var j jsonResult
+	if err := json.Unmarshal(data, &j); err != nil {
+		return err
+	}
+	host, err := netip.ParseAddr(j.Host)
+	if err != nil {
+		return fmt.Errorf("invalid host %q", j.Host)
+	}
+	if j.Port < 1 || j.Port > 65535 {
+		return fmt.Errorf("invalid port %d for host %s", j.Port, j.Host)
+	}
+	*r = Result{
+		Host:    host,
+		Port:    j.Port,
+		Service: j.Service,
+		Version: j.Version,
+		Banner:  j.Banner,
+		Latency: time.Duration(math.Round(j.LatencyMS*1000)) * time.Microsecond,
+		TLS:     j.TLS,
+	}
+	return nil
 }
 
 // WriteResults renders results to w in the given format: table, json, csv
@@ -48,7 +91,7 @@ func WriteResultsMeta(w io.Writer, results []Result, format string, meta ScanMet
 	case "table":
 		return writeTable(w, results)
 	case "json":
-		return writeJSON(w, results)
+		return writeJSON(w, results, meta.Diff)
 	case "csv":
 		return writeCSV(w, results)
 	case "html":
@@ -61,25 +104,29 @@ func writeTable(w io.Writer, results []Result) error {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "HOST\tPORT\tSERVICE\tTLS\tLATENCY\tBANNER")
 	for _, r := range results {
-		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%.2fms\t%s\n", r.Host, r.Port, r.Service, tlsColumn(r.TLS), r.latencyMS(), r.Banner)
+		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%.2fms\t%s\n", r.Host, r.Port, r.serviceColumn(), tlsColumn(r.TLS), r.latencyMS(), r.Banner)
 	}
 	return tw.Flush()
 }
 
-func writeJSON(w io.Writer, results []Result) error {
-	out := make([]jsonResult, 0, len(results))
-	for _, r := range results {
-		out = append(out, jsonResult{r.Host.String(), r.Port, r.Service, r.Banner, r.latencyMS(), r.TLS})
+// writeJSON writes results as a json array, or, when diff is non-nil, as an
+// object holding the results and the diff.
+func writeJSON(w io.Writer, results []Result, diff *DiffReport) error {
+	if results == nil {
+		results = []Result{}
 	}
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
-	return enc.Encode(out)
+	if diff != nil {
+		return enc.Encode(jsonReport{results, diff})
+	}
+	return enc.Encode(results)
 }
 
 func writeCSV(w io.Writer, results []Result) error {
 	cw := csv.NewWriter(w)
 	_ = cw.Write([]string{
-		"host", "port", "service", "banner", "latency_ms",
+		"host", "port", "service", "version", "banner", "latency_ms",
 		"tls_version", "tls_cipher", "tls_cert_subject", "tls_cert_expiry",
 	})
 	for _, r := range results {
@@ -91,13 +138,22 @@ func writeCSV(w io.Writer, results []Result) error {
 			}
 		}
 		_ = cw.Write([]string{
-			r.Host.String(), strconv.Itoa(r.Port), r.Service, r.Banner,
+			r.Host.String(), strconv.Itoa(r.Port), r.Service, r.Version, r.Banner,
 			strconv.FormatFloat(r.latencyMS(), 'f', 2, 64),
 			version, cipher, subject, expiry,
 		})
 	}
 	cw.Flush()
 	return cw.Error()
+}
+
+// serviceColumn is the table's SERVICE cell: the service name, followed by
+// the version in parentheses when known.
+func (r Result) serviceColumn() string {
+	if r.Version == "" {
+		return r.Service
+	}
+	return r.Service + " (" + r.Version + ")"
 }
 
 // tlsColumn is the table's TLS cell: the short protocol version, with "!"

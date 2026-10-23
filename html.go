@@ -126,7 +126,7 @@ footer { margin-top: 2.5rem; color: #8f98a8; font-size: .85rem; }
 <tr>
 <td class="mono">{{.Host}}</td>
 <td>{{.Port}}</td>
-<td>{{.Service}}</td>
+<td>{{.Service}}{{with .Version}}<br><span class="dim mono">{{.}}</span>{{end}}</td>
 <td>{{with .TLS}}{{.Version}} <span class="dim mono">{{.Cipher}}</span>
 {{- if .CertSubject}}<br>{{.CertSubject}}{{end}}
 {{- if not .CertNotAfter.IsZero}}<br><span class="dim">expires {{date .CertNotAfter}}</span>{{end}}

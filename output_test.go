@@ -16,7 +16,7 @@ func sampleResults() []Result {
 	expiry := time.Date(2024, 1, 2, 3, 4, 5, 0, time.UTC)
 	return []Result{
 		{
-			Host: netip.MustParseAddr("10.0.0.1"), Port: 22, Service: "ssh",
+			Host: netip.MustParseAddr("10.0.0.1"), Port: 22, Service: "ssh", Version: "OpenSSH_9.6",
 			Banner: "SSH-2.0-OpenSSH_9.6", Latency: 1500 * time.Microsecond,
 		},
 		{
@@ -42,8 +42,8 @@ func TestWriteTableTLS(t *testing.T) {
 	if f := strings.Fields(lines[0]); f[3] != "TLS" {
 		t.Errorf("header = %q, want TLS as the fourth column", lines[0])
 	}
-	if f := strings.Fields(lines[1]); f[3] != "-" {
-		t.Errorf("plaintext row TLS column = %q, want -", f[3])
+	if f := strings.Fields(lines[1]); f[2] != "ssh" || f[3] != "(OpenSSH_9.6)" || f[4] != "-" {
+		t.Errorf("plaintext row = %q, want service ssh (OpenSSH_9.6) and TLS -", lines[1])
 	}
 	if f := strings.Fields(lines[2]); f[3] != "1.3!" {
 		t.Errorf("TLS row TLS column = %q, want 1.3!", f[3])
@@ -61,6 +61,12 @@ func TestWriteJSONTLS(t *testing.T) {
 	}
 	if _, ok := got[0]["tls"]; ok {
 		t.Error("plaintext result has a tls key, want it omitted")
+	}
+	if got[0]["version"] != "OpenSSH_9.6" {
+		t.Errorf("version = %v, want OpenSSH_9.6", got[0]["version"])
+	}
+	if _, ok := got[1]["version"]; ok {
+		t.Error("result without a version has a version key, want it omitted")
 	}
 	tlsObj, ok := got[1]["tls"].(map[string]any)
 	if !ok {
@@ -82,9 +88,9 @@ func TestWriteCSVTLS(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := [][]string{
-		{"host", "port", "service", "banner", "latency_ms", "tls_version", "tls_cipher", "tls_cert_subject", "tls_cert_expiry"},
-		{"10.0.0.1", "22", "ssh", "SSH-2.0-OpenSSH_9.6", "1.50", "", "", "", ""},
-		{"10.0.0.1", "443", "https", "HTTP/1.1 200 OK <script>alert(1)</script>", "1.00",
+		{"host", "port", "service", "version", "banner", "latency_ms", "tls_version", "tls_cipher", "tls_cert_subject", "tls_cert_expiry"},
+		{"10.0.0.1", "22", "ssh", "OpenSSH_9.6", "SSH-2.0-OpenSSH_9.6", "1.50", "", "", "", ""},
+		{"10.0.0.1", "443", "https", "", "HTTP/1.1 200 OK <script>alert(1)</script>", "1.00",
 			"TLS 1.3", "TLS_AES_128_GCM_SHA256", "web & co", "2024-01-02T03:04:05Z"},
 	}
 	if len(rows) != len(want) {
@@ -120,6 +126,7 @@ func TestWriteHTML(t *testing.T) {
 		"<dd>1.5s</dd>",
 		"<dd>3</dd>",
 		"<tr><td>ssh</td><td>2</td></tr>",
+		`<td>ssh<br><span class="dim mono">OpenSSH_9.6</span></td>`,
 		"<tr><td>https</td><td>1</td></tr>",
 		"TLS_AES_128_GCM_SHA256",
 		"web &amp; co",

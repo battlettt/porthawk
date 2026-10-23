@@ -14,9 +14,18 @@ type Result struct {
 	Host    netip.Addr
 	Port    int
 	Service string
+	Version string // server software version from the banner, if recognized
 	Banner  string
 	Latency time.Duration
 	TLS     *TLSInfo // nil unless a TLS handshake succeeded
+}
+
+// compareResults orders results by host, then port.
+func compareResults(a, b Result) int {
+	if c := a.Host.Compare(b.Host); c != 0 {
+		return c
+	}
+	return a.Port - b.Port
 }
 
 // Scanner performs concurrent TCP connect scans.
@@ -111,7 +120,7 @@ func (s *Scanner) probe(ctx context.Context, j job) (Result, bool) {
 	}
 
 	raw := GrabBanner(conn, j.host.String(), j.port, min(s.Timeout, time.Second))
-	r.Service = GuessService(raw, j.port)
+	r.Service, r.Version = ExtractService(raw, j.port)
 	if r.TLS != nil {
 		r.Service = tlsService(r.Service, j.port)
 	}

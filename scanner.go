@@ -16,12 +16,14 @@ type Result struct {
 	Service string
 	Banner  string
 	Latency time.Duration
+	TLS     *TLSInfo // nil unless a TLS handshake succeeded
 }
 
 // Scanner performs concurrent TCP connect scans.
 type Scanner struct {
 	Workers int           // maximum concurrent connections
 	Timeout time.Duration // dial timeout per connection
+	NoTLS   bool          // skip TLS handshakes on TLS ports
 }
 
 // bannerLen is the maximum displayed banner length.
@@ -78,7 +80,9 @@ func (s *Scanner) Scan(ctx context.Context, hosts []netip.Addr, ports []int) <-c
 	return results
 }
 
-// probe connects to a single host/port and, if open, grabs its banner.
+// probe connects to a single host/port and, if open, grabs its banner. On
+// TLS ports the banner is read over TLS when the handshake succeeds;
+// otherwise porthawk reconnects and falls back to a plaintext probe.
 func (s *Scanner) probe(ctx context.Context, j job) (Result, bool) {
 	addr := net.JoinHostPort(j.host.String(), strconv.Itoa(j.port))
 	d := net.Dialer{Timeout: s.Timeout}
@@ -87,15 +91,30 @@ func (s *Scanner) probe(ctx context.Context, j job) (Result, bool) {
 	if err != nil {
 		return Result{}, false
 	}
-	latency := time.Since(start)
-	defer conn.Close()
+	r := Result{Host: j.host, Port: j.port, Latency: time.Since(start)}
+	defer func() { conn.Close() }()
+
+	if _, ok := tlsPorts[j.port]; ok && !s.NoTLS {
+		tc, info, err := ProbeTLS(conn, j.host.String(), s.Timeout)
+		if err == nil {
+			conn, r.TLS = tc, &info
+		} else {
+			// The failed handshake has consumed the connection.
+			conn.Close()
+			plain, err := d.DialContext(ctx, "tcp", addr)
+			if err != nil {
+				r.Service = GuessService(nil, j.port)
+				return r, true
+			}
+			conn = plain
+		}
+	}
 
 	raw := GrabBanner(conn, j.host.String(), j.port, min(s.Timeout, time.Second))
-	return Result{
-		Host:    j.host,
-		Port:    j.port,
-		Service: GuessService(raw, j.port),
-		Banner:  CleanBanner(raw, bannerLen),
-		Latency: latency,
-	}, true
+	r.Service = GuessService(raw, j.port)
+	if r.TLS != nil {
+		r.Service = tlsService(r.Service, j.port)
+	}
+	r.Banner = CleanBanner(raw, bannerLen)
+	return r, true
 }

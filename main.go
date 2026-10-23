@@ -39,9 +39,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		workers = fs.Int("w", 100, "number of concurrent workers")
 		timeout = fs.Duration("timeout", 2*time.Second, "per-connection dial timeout")
 		outFile = fs.String("o", "", "write results to `file` instead of stdout")
-		format  = fs.String("f", "table", "output format: table, json, csv")
+		format  = fs.String("f", "table", "output format: table, json, csv, html")
 		quiet   = fs.Bool("q", false, "suppress progress and summary messages")
 		top     = fs.Int("top", 0, "scan the `N` most common ports")
+		noTLS   = fs.Bool("notls", false, "skip TLS handshakes on TLS ports (443, 993, ...)")
 	)
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, "Usage: porthawk -t TARGETS [-p PORTS | -top N] [options]")
@@ -70,8 +71,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return usage("-w must be at least 1")
 	case *timeout <= 0:
 		return usage("-timeout must be positive")
-	case *format != "table" && *format != "json" && *format != "csv":
-		return usage("-f must be table, json or csv")
+	case !slices.Contains([]string{"table", "json", "csv", "html"}, *format):
+		return usage("-f must be table, json, csv or html")
 	}
 
 	var ports []int
@@ -104,11 +105,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 	logf("porthawk: scanning %d host(s) x %d port(s) with %d workers", len(hosts), len(ports), *workers)
 
 	start := time.Now()
-	s := &Scanner{Workers: *workers, Timeout: *timeout}
+	s := &Scanner{Workers: *workers, Timeout: *timeout, NoTLS: *noTLS}
 	var results []Result
 	for r := range s.Scan(ctx, hosts, ports) {
 		results = append(results, r)
 	}
+	finished := time.Now()
 	interrupted := ctx.Err() != nil
 	slices.SortFunc(results, func(a, b Result) int {
 		if c := a.Host.Compare(b.Host); c != 0 {
@@ -117,7 +119,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return a.Port - b.Port
 	})
 
-	if err := writeOutput(*outFile, stdout, results, *format); err != nil {
+	meta := ScanMeta{Targets: *targets, PortsScanned: len(ports), StartedAt: start, FinishedAt: finished}
+	if err := writeOutput(*outFile, stdout, results, *format, meta); err != nil {
 		fmt.Fprintf(stderr, "porthawk: writing results: %v\n", err)
 		return exitError
 	}
@@ -126,20 +129,20 @@ func run(args []string, stdout, stderr io.Writer) int {
 		logf("porthawk: interrupted; %d open port(s) found before stopping", len(results))
 		return exitInterrupted
 	}
-	logf("porthawk: %d open port(s) found in %s", len(results), time.Since(start).Round(time.Millisecond))
+	logf("porthawk: %d open port(s) found in %s", len(results), finished.Sub(start).Round(time.Millisecond))
 	return exitOK
 }
 
 // writeOutput writes results to path, or to stdout if path is empty.
-func writeOutput(path string, stdout io.Writer, results []Result, format string) error {
+func writeOutput(path string, stdout io.Writer, results []Result, format string, meta ScanMeta) error {
 	if path == "" {
-		return WriteResults(stdout, results, format)
+		return WriteResultsMeta(stdout, results, format, meta)
 	}
 	f, err := os.Create(path)
 	if err != nil {
 		return err
 	}
-	if err := WriteResults(f, results, format); err != nil {
+	if err := WriteResultsMeta(f, results, format, meta); err != nil {
 		f.Close()
 		return err
 	}

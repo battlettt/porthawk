@@ -1,12 +1,14 @@
 package main
 
 import (
+	"cmp"
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"io"
 	"math"
 	"net/netip"
+	"slices"
 	"strconv"
 	"text/tabwriter"
 	"time"
@@ -15,6 +17,7 @@ import (
 // jsonResult is the serialized form of a Result.
 type jsonResult struct {
 	Host      string   `json:"host"`
+	Hostname  string   `json:"hostname,omitempty"`
 	Port      int      `json:"port"`
 	Service   string   `json:"service"`
 	Version   string   `json:"version,omitempty"`
@@ -48,7 +51,7 @@ func (r Result) latencyMS() float64 {
 
 // MarshalJSON encodes r in porthawk's json output format.
 func (r Result) MarshalJSON() ([]byte, error) {
-	return json.Marshal(jsonResult{r.Host.String(), r.Port, r.Service, r.Version, r.Banner, r.latencyMS(), r.TLS})
+	return json.Marshal(jsonResult{r.Host.String(), r.Hostname, r.Port, r.Service, r.Version, r.Banner, r.latencyMS(), r.TLS})
 }
 
 // UnmarshalJSON decodes a result written by MarshalJSON. Unknown fields are
@@ -67,13 +70,14 @@ func (r *Result) UnmarshalJSON(data []byte) error {
 		return fmt.Errorf("invalid port %d for host %s", j.Port, j.Host)
 	}
 	*r = Result{
-		Host:    host,
-		Port:    j.Port,
-		Service: j.Service,
-		Version: j.Version,
-		Banner:  j.Banner,
-		Latency: time.Duration(math.Round(j.LatencyMS*1000)) * time.Microsecond,
-		TLS:     j.TLS,
+		Host:     host,
+		Hostname: j.Hostname,
+		Port:     j.Port,
+		Service:  j.Service,
+		Version:  j.Version,
+		Banner:   j.Banner,
+		Latency:  time.Duration(math.Round(j.LatencyMS*1000)) * time.Microsecond,
+		TLS:      j.TLS,
 	}
 	return nil
 }
@@ -100,11 +104,23 @@ func WriteResultsMeta(w io.Writer, results []Result, format string, meta ScanMet
 	return fmt.Errorf("unknown format %q", format)
 }
 
+// writeTable writes results as an aligned table. The HOSTNAME column is
+// only included when at least one result has a hostname.
 func writeTable(w io.Writer, results []Result) error {
+	withHostname := slices.ContainsFunc(results, func(r Result) bool { return r.Hostname != "" })
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "HOST\tPORT\tSERVICE\tTLS\tLATENCY\tBANNER")
+	if withHostname {
+		fmt.Fprint(tw, "HOST\tHOSTNAME\t")
+	} else {
+		fmt.Fprint(tw, "HOST\t")
+	}
+	fmt.Fprintln(tw, "PORT\tSERVICE\tTLS\tLATENCY\tBANNER")
 	for _, r := range results {
-		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%.2fms\t%s\n", r.Host, r.Port, r.serviceColumn(), tlsColumn(r.TLS), r.latencyMS(), r.Banner)
+		fmt.Fprintf(tw, "%s\t", r.Host)
+		if withHostname {
+			fmt.Fprintf(tw, "%s\t", cmp.Or(r.Hostname, "-"))
+		}
+		fmt.Fprintf(tw, "%d\t%s\t%s\t%.2fms\t%s\n", r.Port, r.serviceColumn(), tlsColumn(r.TLS), r.latencyMS(), r.Banner)
 	}
 	return tw.Flush()
 }
@@ -126,7 +142,7 @@ func writeJSON(w io.Writer, results []Result, diff *DiffReport) error {
 func writeCSV(w io.Writer, results []Result) error {
 	cw := csv.NewWriter(w)
 	_ = cw.Write([]string{
-		"host", "port", "service", "version", "banner", "latency_ms",
+		"host", "hostname", "port", "service", "version", "banner", "latency_ms",
 		"tls_version", "tls_cipher", "tls_cert_subject", "tls_cert_expiry",
 	})
 	for _, r := range results {
@@ -138,7 +154,7 @@ func writeCSV(w io.Writer, results []Result) error {
 			}
 		}
 		_ = cw.Write([]string{
-			r.Host.String(), strconv.Itoa(r.Port), r.Service, r.Version, r.Banner,
+			r.Host.String(), r.Hostname, strconv.Itoa(r.Port), r.Service, r.Version, r.Banner,
 			strconv.FormatFloat(r.latencyMS(), 'f', 2, 64),
 			version, cipher, subject, expiry,
 		})

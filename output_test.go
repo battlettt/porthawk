@@ -50,6 +50,51 @@ func TestWriteTableTLS(t *testing.T) {
 	}
 }
 
+func TestWriteTableHostname(t *testing.T) {
+	results := sampleResults()
+	results[0].Hostname = "gw.example.test"
+	var buf bytes.Buffer
+	if err := WriteResults(&buf, results, "table"); err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	if f := strings.Fields(lines[0]); f[1] != "HOSTNAME" || f[4] != "TLS" {
+		t.Errorf("header = %q, want HOSTNAME as the second column", lines[0])
+	}
+	if f := strings.Fields(lines[1]); f[1] != "gw.example.test" || f[2] != "22" {
+		t.Errorf("row = %q, want hostname gw.example.test before the port", lines[1])
+	}
+	if f := strings.Fields(lines[2]); f[1] != "-" || f[2] != "443" {
+		t.Errorf("row without hostname = %q, want - in the HOSTNAME column", lines[2])
+	}
+}
+
+func TestWriteJSONHostname(t *testing.T) {
+	results := sampleResults()
+	results[0].Hostname = "gw.example.test"
+	var buf bytes.Buffer
+	if err := WriteResults(&buf, results, "json"); err != nil {
+		t.Fatal(err)
+	}
+	var got []map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got[0]["hostname"] != "gw.example.test" {
+		t.Errorf("hostname = %v, want gw.example.test", got[0]["hostname"])
+	}
+	if _, ok := got[1]["hostname"]; ok {
+		t.Error("result without a hostname has a hostname key, want it omitted")
+	}
+	var back []Result
+	if err := json.Unmarshal(buf.Bytes(), &back); err != nil {
+		t.Fatal(err)
+	}
+	if back[0].Hostname != "gw.example.test" {
+		t.Errorf("decoded Hostname = %q, want gw.example.test", back[0].Hostname)
+	}
+}
+
 func TestWriteJSONTLS(t *testing.T) {
 	var buf bytes.Buffer
 	if err := WriteResults(&buf, sampleResults(), "json"); err != nil {
@@ -88,9 +133,9 @@ func TestWriteCSVTLS(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := [][]string{
-		{"host", "port", "service", "version", "banner", "latency_ms", "tls_version", "tls_cipher", "tls_cert_subject", "tls_cert_expiry"},
-		{"10.0.0.1", "22", "ssh", "OpenSSH_9.6", "SSH-2.0-OpenSSH_9.6", "1.50", "", "", "", ""},
-		{"10.0.0.1", "443", "https", "", "HTTP/1.1 200 OK <script>alert(1)</script>", "1.00",
+		{"host", "hostname", "port", "service", "version", "banner", "latency_ms", "tls_version", "tls_cipher", "tls_cert_subject", "tls_cert_expiry"},
+		{"10.0.0.1", "", "22", "ssh", "OpenSSH_9.6", "SSH-2.0-OpenSSH_9.6", "1.50", "", "", "", ""},
+		{"10.0.0.1", "", "443", "https", "", "HTTP/1.1 200 OK <script>alert(1)</script>", "1.00",
 			"TLS 1.3", "TLS_AES_128_GCM_SHA256", "web & co", "2024-01-02T03:04:05Z"},
 	}
 	if len(rows) != len(want) {
@@ -112,7 +157,7 @@ func TestWriteHTML(t *testing.T) {
 		FinishedAt:   started.Add(1500 * time.Millisecond),
 	}
 	results := append(sampleResults(), Result{
-		Host: netip.MustParseAddr("10.0.0.2"), Port: 2222, Service: "ssh",
+		Host: netip.MustParseAddr("10.0.0.2"), Hostname: "db.example.test", Port: 2222, Service: "ssh",
 	})
 	var buf bytes.Buffer
 	if err := WriteResultsMeta(&buf, results, "html", meta); err != nil {
@@ -135,10 +180,15 @@ func TestWriteHTML(t *testing.T) {
 		"&lt;script&gt;alert(1)&lt;/script&gt;",
 		"Scan finished at 2026-03-04 10:00:01 UTC",
 		`href="https://github.com/battlettt/porthawk"`,
+		`<td class="mono">10.0.0.2<br><span class="dim">db.example.test</span></td>`,
+		"porthawk v" + version + "</a>",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("report is missing %q", want)
 		}
+	}
+	if strings.Contains(out, `<td class="mono">10.0.0.1<br>`) {
+		t.Error("report shows a hostname for a result without one")
 	}
 	if strings.Contains(out, "<script>") || strings.Contains(out, "<evil>") {
 		t.Error("report contains unescaped dynamic content")

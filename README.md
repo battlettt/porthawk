@@ -41,6 +41,15 @@ cd porthawk
 go build -o porthawk .
 ```
 
+To stamp a release version into the binary (shown by `-version` and in the
+HTML report footer), set it with `-ldflags`. Without it the version is `dev`.
+
+```sh
+go build -ldflags "-X main.version=1.2.0" -o porthawk .
+./porthawk -version
+# porthawk v1.2.0
+```
+
 ## Usage
 
 ```sh
@@ -70,6 +79,9 @@ go build -o porthawk .
 
 # Plaintext probes only, no TLS handshakes
 ./porthawk -t 10.0.0.5 -p 443,993 -notls
+
+# Add reverse DNS names for the hosts with open ports
+./porthawk -t 192.168.1.0/24 -top 20 -rdns
 ```
 
 Target specs can be combined with commas: single IPv4/IPv6 addresses,
@@ -92,6 +104,8 @@ To prevent accidents, a single scan is limited to 65,536 hosts.
 | `-q`       | `false`   | Suppress progress and summary messages on stderr         |
 | `-notls`   | `false`   | Skip TLS handshakes; probe TLS ports in plaintext        |
 | `-diff`    |           | Compare results with a previous JSON scan file           |
+| `-rdns`    | `false`   | Reverse DNS (PTR) lookup for hosts with open ports       |
+| `-version` |           | Print `porthawk v<version>` and exit                     |
 
 Exit codes: `0` when the scan completes, `1` if the results can't be written
 or the `-diff` file can't be read, `2` for usage errors (bad flags, targets or ports) and `130` if the scan is
@@ -118,7 +132,25 @@ one-line banner.
 The TLS column shows the negotiated version (`1.3`, `1.2`, ...), with `!`
 appended when the certificate has expired, or `-` for plaintext services.
 
-JSON output is an array of objects. `version` is omitted when unknown.
+With `-rdns`, porthawk looks up the PTR record of each host that has an open
+port once the scan has finished: one lookup per distinct host, at most 16 at
+a time, each with a 2 second timeout. The name is shown in a HOSTNAME column
+after HOST (`-` for hosts without a PTR record). The column is left out when
+no host has a name, which is always the case without `-rdns`:
+
+```
+$ ./porthawk -t 127.0.0.1 -top 100 -rdns
+porthawk: scanning 1 host(s) x 100 port(s) with 100 workers
+HOST       HOSTNAME   PORT  SERVICE                 TLS  LATENCY  BANNER
+127.0.0.1  localhost  8080  http (SimpleHTTP/0.6)   -    5.43ms   HTTP/1.0 200 OK
+127.0.0.1  localhost  8443  https (SimpleHTTP/0.6)  1.3  0.40ms   HTTP/1.0 200 OK
+porthawk: 2 open port(s) found in 13ms
+```
+
+Lookups are skipped if the scan is interrupted.
+
+JSON output is an array of objects. `version` is omitted when unknown, and
+`hostname` (after `host`) is omitted unless `-rdns` found a name.
 Results from a TLS handshake carry a `tls` object; plaintext results omit it:
 
 ```json
@@ -158,16 +190,26 @@ Results from a TLS handshake carry a `tls` object; plaintext results omit it:
 With `-diff`, the JSON output becomes an object: the same array under
 `results`, plus a `diff` object (see [Change detection](#change-detection)).
 
-CSV output has the columns `host, port, service, version, banner,
+CSV output has the columns `host, hostname, port, service, version, banner,
 latency_ms, tls_version, tls_cipher, tls_cert_subject, tls_cert_expiry`. The
+hostname is empty without `-rdns` or when the lookup finds no name, the
 version is empty when unknown, and the TLS columns are empty for plaintext
 services.
 
 The HTML report (`-f html`) is a single file with no external assets. It has
 a header with the scan targets, ports per host, time taken and open port
 count, a per-service summary, and a table of every open port with its
-software version (under the service name), TLS version, cipher, certificate
-subject and expiry.
+software version (under the service name), reverse DNS name (under the
+host, with `-rdns`), TLS version, cipher, certificate subject and expiry. The
+footer gives the finish time and the porthawk version that wrote the report.
+
+**Example report:** [docs/example-report.html](docs/example-report.html) is a
+sample generated on the author's machine with
+`./porthawk -t 127.0.0.1 -top 100 -rdns -f html -o docs/example-report.html`,
+against two local Python test servers: `http.server` on port 8080 and the same
+server over TLS with a self-signed certificate on 8443. It was built without
+`-ldflags`, so the footer says `porthawk vdev`. GitHub shows HTML files as
+source; download the file or open it from a local clone to see it rendered.
 
 ## Service versions
 
@@ -316,6 +358,8 @@ skip handshakes altogether.
   conventional service name.
 - `version.go` pulls software versions out of banners with a short list of
   regular expressions, one or more per service.
+- `rdns.go` does the optional reverse DNS lookups after the scan, once per
+  distinct host, with its own small worker pool.
 - `output.go` renders results as an aligned table, JSON or CSV, and
   `html.go` renders the HTML report with `html/template`.
 - `diff.go` loads a previous JSON scan, compares it with the current results
@@ -331,7 +375,11 @@ The tests cover target expansion (CIDR, ranges, dedupe, invalid input), port
 parsing (ranges, lists, top-N, invalid input), service fingerprinting and
 version extraction from sample banners, and every output format. The diff
 tests cover the JSON write/load round trip, opened/closed/changed detection,
-and missing or corrupt `-diff` files. The TLS tests start local
+and missing or corrupt `-diff` files. The reverse DNS tests use a fake
+resolver to check one lookup per host, timeouts and cancellation, plus one
+real lookup of `127.0.0.1`. That lookup normally comes from `/etc/hosts`, but
+if the address isn't listed there the system resolver may ask a DNS server.
+The TLS tests start local
 `httptest` servers on the loopback interface, including ones with generated
 expired and CA-signed certificates, and the `-diff` end-to-end tests use
 plain loopback listeners. No other network connections are made.

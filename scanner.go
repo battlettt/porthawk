@@ -11,13 +11,14 @@ import (
 
 // Result describes a single open port.
 type Result struct {
-	Host    netip.Addr
-	Port    int
-	Service string
-	Version string // server software version from the banner, if recognized
-	Banner  string
-	Latency time.Duration
-	TLS     *TLSInfo // nil unless a TLS handshake succeeded
+	Host     netip.Addr
+	Hostname string // reverse DNS name, set only with -rdns
+	Port     int
+	Service  string
+	Version  string // server software version from the banner, if recognized
+	Banner   string
+	Latency  time.Duration
+	TLS      *TLSInfo // nil unless a TLS handshake succeeded
 }
 
 // compareResults orders results by host, then port.

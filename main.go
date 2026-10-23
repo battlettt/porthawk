@@ -24,6 +24,10 @@ const (
 	exitInterrupted = 130
 )
 
+// version is the porthawk release, set at build time with
+// -ldflags "-X main.version=1.2.0".
+var version = "dev"
+
 // defaultTop is the number of common ports scanned when no ports are given.
 const defaultTop = 100
 
@@ -45,6 +49,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		top     = fs.Int("top", 0, "scan the `N` most common ports")
 		noTLS   = fs.Bool("notls", false, "skip TLS handshakes on TLS ports (443, 993, ...)")
 		diff    = fs.String("diff", "", "compare results with a previous json scan in `file`")
+		rdns    = fs.Bool("rdns", false, "look up reverse DNS (PTR) names for hosts with open ports")
+		showVer = fs.Bool("version", false, "print the porthawk version and exit")
 	)
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, "Usage: porthawk -t TARGETS [-p PORTS | -top N] [options]")
@@ -55,6 +61,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 			return exitOK
 		}
 		return exitUsage
+	}
+	if *showVer {
+		fmt.Fprintf(stdout, "porthawk v%s\n", version)
+		return exitOK
 	}
 
 	usage := func(format string, a ...any) int {
@@ -127,6 +137,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 	finished := time.Now()
 	interrupted := ctx.Err() != nil
 	slices.SortFunc(results, compareResults)
+	if *rdns && !interrupted {
+		ResolveHostnames(ctx, results, DefaultReverseResolver, rdnsWorkers, rdnsTimeout)
+	}
 
 	meta := ScanMeta{Targets: *targets, PortsScanned: len(ports), StartedAt: start, FinishedAt: finished}
 	if *diff != "" {

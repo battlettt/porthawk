@@ -34,6 +34,7 @@ type Scanner struct {
 	Workers int           // maximum concurrent connections
 	Timeout time.Duration // dial timeout per connection
 	NoTLS   bool          // skip TLS handshakes on TLS ports
+	Rate    int           // maximum connection attempts per second, 0 = unlimited
 }
 
 // bannerLen is the maximum displayed banner length.
@@ -53,8 +54,25 @@ func (s *Scanner) Scan(ctx context.Context, hosts []netip.Addr, ports []int) <-c
 
 	go func() {
 		defer close(jobs)
+		var limiter <-chan time.Time
+		if s.Rate > 0 {
+			interval := time.Second / time.Duration(s.Rate)
+			if interval <= 0 {
+				interval = time.Nanosecond
+			}
+			ticker := time.NewTicker(interval)
+			defer ticker.Stop()
+			limiter = ticker.C
+		}
 		for _, h := range hosts {
 			for _, p := range ports {
+				if limiter != nil {
+					select {
+					case <-limiter:
+					case <-ctx.Done():
+						return
+					}
+				}
 				select {
 				case jobs <- job{h, p}:
 				case <-ctx.Done():

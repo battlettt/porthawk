@@ -44,6 +44,12 @@ func TestCleanBanner(t *testing.T) {
 		{[]byte("HTTP/1.1 200 OK\r\nServer: x\r\n"), 60, "HTTP/1.1 200 OK"},
 		{[]byte("abcdefghijklmnop"), 10, "abcdefg..."},
 		{[]byte("\x00\x01hi\x7f there"), 60, "hi there"},
+		// C1 controls (U+009B CSI introducer, U+0085 NEL) must be stripped
+		// so a banner cannot inject terminal escape sequences.
+		{[]byte("\u009b31mred\u0085"), 60, "31mred"},
+		// Tiny limits must not panic: truncate without an ellipsis.
+		{[]byte("abcdefghij"), 2, "ab"},
+		{[]byte("abcdefghij"), 0, ""},
 		{mysql, 60, "5.7.44-log"},
 		{nil, 60, ""},
 	}

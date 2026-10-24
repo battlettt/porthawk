@@ -6,6 +6,7 @@ import (
 	"net"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // webPorts are ports that get an HTTP HEAD probe instead of waiting for
@@ -100,7 +101,9 @@ func isMySQLGreeting(b []byte) bool {
 }
 
 // CleanBanner turns raw banner bytes into a single printable line of at
-// most max runes, suitable for display.
+// most max runes, suitable for display. All control characters are
+// stripped, including the C1 range U+0080-U+009F, so terminal escape
+// sequences smuggled into a banner cannot reformat the output.
 func CleanBanner(b []byte, max int) string {
 	if isMySQLGreeting(b) {
 		// Skip the binary header; the server version is a NUL-terminated string.
@@ -109,14 +112,21 @@ func CleanBanner(b []byte, max int) string {
 	}
 	line, _, _ := bytes.Cut(b, []byte("\n"))
 	out := strings.Map(func(r rune) rune {
-		if r < 0x20 || r == 0x7f || r == 0xfffd {
+		if unicode.IsControl(r) || r == 0xfffd {
 			return -1
 		}
 		return r
 	}, string(line))
 	out = strings.TrimSpace(out)
+	if max < 0 {
+		max = 0
+	}
 	if r := []rune(out); len(r) > max {
-		out = string(r[:max-3]) + "..."
+		if max <= 3 {
+			out = string(r[:max])
+		} else {
+			out = string(r[:max-3]) + "..."
+		}
 	}
 	return out
 }

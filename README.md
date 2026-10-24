@@ -45,9 +45,9 @@ To stamp a release version into the binary (shown by `-version` and in the
 HTML report footer), set it with `-ldflags`. Without it the version is `dev`.
 
 ```sh
-go build -ldflags "-X main.version=1.2.0" -o porthawk .
+go build -ldflags "-X main.version=1.3.0" -o porthawk .
 ./porthawk -version
-# porthawk v1.2.0
+# porthawk v1.3.0
 ```
 
 ## Usage
@@ -64,6 +64,9 @@ go build -ldflags "-X main.version=1.2.0" -o porthawk .
 
 # Full port sweep of one host with more workers and a tighter timeout
 ./porthawk -t 192.168.1.10 -p 1-65535 -w 500 -timeout 500ms
+
+# Same sweep, gently: at most 50 connection attempts per second
+./porthawk -t 192.168.1.10 -p 1-65535 -rate 50
 
 # Machine-readable output for later diffing
 ./porthawk -t 192.168.1.0/24 -top 50 -f json -o scan.json -q
@@ -98,6 +101,7 @@ To prevent accidents, a single scan is limited to 65,536 hosts.
 | `-p`       | top 100   | Ports: `80`, `22,80,443`, `1-1024`, or a mix             |
 | `-top`     |           | Scan the N most common ports (1-100); excludes `-p`      |
 | `-w`       | `100`     | Number of concurrent workers                             |
+| `-rate`    | `0`       | Max connection attempts per second (`0` = unlimited)    |
 | `-timeout` | `2s`      | Per-connection dial timeout (e.g. `500ms`, `3s`)         |
 | `-f`       | `table`   | Output format: `table`, `json`, `csv`, `html`            |
 | `-o`       | stdout    | Write results to a file                                  |
@@ -369,7 +373,16 @@ skip handshakes altogether.
 
 ```sh
 go test ./...
+go test -race ./...
+make fuzz   # 30s of fuzzing per parser target
 ```
+
+Continuous integration runs on every push and pull request to `main`
+(see `.github/workflows/ci.yml`): format check, build, vet, tests, tests
+with the race detector, and a short fuzz smoke test. `make` wraps the
+common tasks: `build`, `version` (stamps `1.3.0` into the binary),
+`test`, `vet`, `race`, `fuzz`, `fmt`, `clean`, and `report` (scans
+localhost and writes `report.html`).
 
 The tests cover target expansion (CIDR, ranges, dedupe, invalid input), port
 parsing (ranges, lists, top-N, invalid input), service fingerprinting and
@@ -407,7 +420,9 @@ plain loopback listeners. No other network connections are made.
   changing the upstream version number. Treat them as a lead, not proof of
   a vulnerability.
 - **Rate.** Lots of workers on a slow or monitored network can set off
-  IDS/IPS alerts or overload fragile devices. Start small.
+  IDS/IPS alerts or overload fragile devices. Start small, and use
+  `-rate` to cap connection attempts per second (for example `-rate 50`
+  on a home router or an old device).
 
 ## Responsible use
 

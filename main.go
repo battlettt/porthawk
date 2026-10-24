@@ -25,7 +25,7 @@ const (
 )
 
 // version is the porthawk release, set at build time with
-// -ldflags "-X main.version=1.2.0".
+// -ldflags "-X main.version=1.3.0".
 var version = "dev"
 
 // defaultTop is the number of common ports scanned when no ports are given.
@@ -42,6 +42,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		targets = fs.String("t", "", "targets: IPs, hostnames, CIDRs, ranges (comma-separated, required)")
 		portStr = fs.String("p", "", "ports: e.g. 22,80,443 or 1-1024 (default: top 100)")
 		workers = fs.Int("w", 100, "number of concurrent workers")
+		rate    = fs.Int("rate", 0, "maximum connection attempts per second (0 = unlimited)")
 		timeout = fs.Duration("timeout", 2*time.Second, "per-connection dial timeout")
 		outFile = fs.String("o", "", "write results to `file` instead of stdout")
 		format  = fs.String("f", "table", "output format: table, json, csv, html")
@@ -81,6 +82,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return usage("use either -p or -top, not both")
 	case *workers < 1:
 		return usage("-w must be at least 1")
+	case *rate < 0:
+		return usage("-rate must be at least 0")
 	case *timeout <= 0:
 		return usage("-timeout must be positive")
 	case !slices.Contains([]string{"table", "json", "csv", "html"}, *format):
@@ -129,7 +132,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	logf("porthawk: scanning %d host(s) x %d port(s) with %d workers", len(hosts), len(ports), *workers)
 
 	start := time.Now()
-	s := &Scanner{Workers: *workers, Timeout: *timeout, NoTLS: *noTLS}
+	s := &Scanner{Workers: *workers, Timeout: *timeout, NoTLS: *noTLS, Rate: *rate}
 	var results []Result
 	for r := range s.Scan(ctx, hosts, ports) {
 		results = append(results, r)
